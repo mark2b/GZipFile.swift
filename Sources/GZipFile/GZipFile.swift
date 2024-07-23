@@ -58,7 +58,53 @@ public struct GZipFile {
         destinationFileHandle.write(Data(bytes: &crc, count: MemoryLayout<UInt32>.size))
         destinationFileHandle.write(Data(bytes: &sourceFileLength, count: MemoryLayout<UInt32>.size))
     }
-    
+
+    public func decompress() throws {
+        let fm = FileManager.default
+        let sourceFileHandle = try FileHandle(forReadingFrom: sourceFileURL)
+        if fm.fileExists(atPath: destinationFileURL.relativePath) {
+            try fm.removeItem(at: destinationFileURL)
+        }
+        fm.createFile(atPath: destinationFileURL.relativePath, contents: Data())
+        let destinationFileHandle = try FileHandle(forWritingTo: destinationFileURL)
+        defer {
+            try? destinationFileHandle.close()
+        }
+        
+        // Write GZIP header to output file
+        var headerData = Data([0x1f, 0x8b, 0x08, 0x00]) // magic, magic, deflate, noflags
+        var unixtime = UInt32(Date().timeIntervalSince1970).littleEndian
+        headerData.append(Data(bytes: &unixtime, count: MemoryLayout<UInt32>.size))
+        headerData.append(contentsOf: [0x00, 0x03])  // normal compression level, unix file type
+        destinationFileHandle.write(headerData)
+
+        let bufferSize = 32_768 * 2
+        
+        // Get source file length
+        let attrs = try fm.attributesOfItem(atPath: sourceFileURL.relativePath)
+        guard var sourceFileLength:UInt32 = (attrs[.size] as? UInt32)?.littleEndian else {
+            return
+        }
+
+        let outputFilter = try OutputFilter(.decompress, using: .zlib, bufferCapacity: bufferSize) {(data: Data?) -> Void in
+            if let data = data {
+                destinationFileHandle.write(data)
+            }
+        }
+        try sourceFileHandle.seek(toOffset: 10)
+        while true {
+            let subdata = sourceFileHandle.readData(ofLength: bufferSize)
+
+            try outputFilter.write(subdata)
+            if subdata.count < bufferSize {
+                break
+            }
+        }
+        try outputFilter.finalize()
+        
+        destinationFileHandle.write(Data(bytes: &sourceFileLength, count: MemoryLayout<UInt32>.size))
+    }
+
     public init(sourceFileURL:URL, destinationFileURL:URL) {
         self.sourceFileURL = sourceFileURL
         self.destinationFileURL = destinationFileURL
